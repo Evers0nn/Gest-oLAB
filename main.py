@@ -1,37 +1,56 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from supabase import create_client
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, text
 import os
-
-# 1. Configuração do Banco de Dados
-# Substitua pela URL que você pegou no Supabase (Database > Connection string > URI)
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-engine = create_engine(DATABASE_URL)
 
 app = FastAPI()
 
-# 2. Habilitar CORS (permite que o seu Frontend acesse este Backend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 3. Rota para Listar Estoque
-@app.get("/estoque")
-def listar_estoque():
-    with engine.connect() as conn:
-        query = text("SELECT * FROM componentes ORDER BY id ASC")
-        result = conn.execute(query)
-        # Converte as linhas do banco para uma lista de dicionários
-        return [dict(row._mapping) for row in result]
+# Use suas chaves reais aqui
+url = "SUA_URL_DO_SUPABASE"
+key = "SUA_CHAVE_DO_SUPABASE"
+supabase = create_client(url, key)
 
-# 4. Rota para Adicionar Item (Opcional)
-@app.post("/estoque/adicionar")
-def adicionar_item(nome: str, quantidade: int, categoria: str = None):
-    with engine.begin() as conn: # engine.begin faz o commit automático
-        query = text("INSERT INTO componentes (nome, quantidade, categoria) VALUES (:nome, :qtd, :cat)")
-        conn.execute(query, {"nome": nome, "qtd": quantidade, "cat": categoria})
-    return {"status": "sucesso"}
+class LoginData(BaseModel):
+    usuario: str
+    senha: str
+
+class UsuarioNovo(BaseModel):
+    usuario: str
+    senha: str
+    nome: str
+
+class ItemEstoque(BaseModel):
+    nome: str
+    categoria: str
+    quantidade: int
+    localizacao: str
+
+@app.get("/estoque")
+def get_estoque():
+    response = supabase.table("estoque").select("*").execute()
+    return response.data
+
+@app.post("/estoque")
+def add_item(item: ItemEstoque):
+    response = supabase.table("estoque").insert(item.dict()).execute()
+    return response.data
+
+@app.post("/login")
+def login(data: LoginData):
+    user = supabase.table("usuarios").select("*").eq("usuario", data.usuario).eq("senha", data.senha).execute()
+    if len(user.data) > 0:
+        return {"status": "sucesso", "usuario": user.data[0]}
+    raise HTTPException(status_code=401, detail="Usuário ou senha incorretos")
+
+@app.post("/usuarios")
+def criar_usuario(user: UsuarioNovo):
+    response = supabase.table("usuarios").insert(user.dict()).execute()
+    return response.data
