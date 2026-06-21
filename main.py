@@ -5,7 +5,7 @@ import os
 
 # 1. Configuração do Banco de Dados
 # Substitua pela URL que você pegou no Supabase (Database > Connection string > URI)
-DATABASE_URL = "postgresql://postgres.pgdlhqpoywuxebtfrtrx:Gest%C3%A3oLAB15@aws-1-us-west-2.pooler.supabase.com:6543/postgres"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 engine = create_engine(DATABASE_URL)
 
