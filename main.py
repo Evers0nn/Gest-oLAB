@@ -14,8 +14,8 @@ app.add_middleware(
 )
 
 # Use suas chaves reais aqui
-url = "SUA_URL_DO_SUPABASE"
-key = "SUA_CHAVE_DO_SUPABASE"
+url = "https://sua-url-aqui.supabase.co"
+key = "sb_publishable_smyXx5XddHo3gMozuhXF_A_MUtlkdE1"
 supabase = create_client(url, key)
 
 class LoginData(BaseModel):
