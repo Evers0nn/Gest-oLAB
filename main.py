@@ -14,7 +14,7 @@ app.add_middleware(
 )
 
 # Use suas chaves reais aqui
-url = "https://pgdlhqpoywuxebtfrtrx.supabase.co/rest/v1/"
+url = "https://pgdlhqpoywuxebtfrtrx.supabase.co"
 key = "sb_publishable_smyXx5XddHo3gMozuhXF_A_MUtlkdE1"
 supabase = create_client(url, key)
 
