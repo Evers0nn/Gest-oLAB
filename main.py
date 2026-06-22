@@ -44,10 +44,15 @@ def add_item(item: ItemEstoque):
     response = supabase.table("estoque").insert(item.dict()).execute()
     return response.data
 
-# NOVA ROTA: Excluir item
 @app.delete("/estoque/{item_id}")
 def delete_item(item_id: int):
     response = supabase.table("estoque").delete().eq("id", item_id).execute()
+    return response.data
+
+# NOVA ROTA: Editar item existente
+@app.put("/estoque/{item_id}")
+def update_item(item_id: int, item: ItemEstoque):
+    response = supabase.table("estoque").update(item.dict()).eq("id", item_id).execute()
     return response.data
 
 @app.post("/login")
