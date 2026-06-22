@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from supabase import create_client
 from fastapi.middleware.cors import CORSMiddleware
-import os
+from typing import Optional
 
 app = FastAPI()
 
@@ -13,7 +13,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Use suas chaves reais aqui
+# COLOQUE SUAS CHAVES AQUI NOVAMENTE
 url = "https://pgdlhqpoywuxebtfrtrx.supabase.co"
 key = "sb_publishable_smyXx5XddHo3gMozuhXF_A_MUtlkdE1"
 supabase = create_client(url, key)
@@ -26,6 +26,7 @@ class UsuarioNovo(BaseModel):
     usuario: str
     senha: str
     nome: str
+    cargo: Optional[str] = None
 
 class ItemEstoque(BaseModel):
     nome: str
@@ -35,12 +36,18 @@ class ItemEstoque(BaseModel):
 
 @app.get("/estoque")
 def get_estoque():
-    response = supabase.table("estoque").select("*").execute()
+    response = supabase.table("estoque").select("*").order("id").execute()
     return response.data
 
 @app.post("/estoque")
 def add_item(item: ItemEstoque):
     response = supabase.table("estoque").insert(item.dict()).execute()
+    return response.data
+
+# NOVA ROTA: Excluir item
+@app.delete("/estoque/{item_id}")
+def delete_item(item_id: int):
+    response = supabase.table("estoque").delete().eq("id", item_id).execute()
     return response.data
 
 @app.post("/login")
