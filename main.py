@@ -17,12 +17,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Conexão com o Banco de Dados (Supabase)
-url = "https://pgdlhqpoywuxebtfrtrx.supabase.co"
-key = "sb_publishable_smyXx5XddHo3gMozuhXF_A_MUtlkdE1"
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise Exception("Variáveis de ambiente do Supabase não encontradas!")
+# Conexão Direta com o Banco de Dados (Supabase)
+SUPABASE_URL = "https://pgdlhqpoywuxebtfrtrx.supabase.co"
+SUPABASE_KEY = "sb_publishable_smyXx5XddHo3gMozuhXF_A_MUtlkdE1"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
