@@ -31,7 +31,7 @@ def create_access_token(data: dict):
 
 def get_usuario_atual(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Token ausente")
+        raise HTTPException(status_code=401, detail="Token ausente ou inválido")
     token = authorization.split(" ")[1]
     try:
         return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -69,7 +69,7 @@ class UsuarioCreate(BaseModel):
     usuario: str
     senha: str
     cargo: str
-    departamento_id: int = 1
+    departamento_nome: str # Alterado de ID para Nome
     nivel_acesso: str = "usuario_dept"
 
 class MovimentacaoCreate(BaseModel):
@@ -95,19 +95,6 @@ def listar_departamentos():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/usuarios")
-def cadastrar_usuario(user: UsuarioCreate):
-    try:
-        if len(supabase.table('usuarios').select('*').eq('usuario', user.usuario).execute().data) > 0:
-            raise HTTPException(status_code=400, detail="Usuário já em uso")
-        
-        novo_usuario = user.dict()
-        novo_usuario['senha'] = get_password_hash(novo_usuario['senha'])
-        supabase.table('usuarios').insert(novo_usuario).execute()
-        return {"status": "sucesso"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/login")
 def login(user: UsuarioLogin):
     try:
@@ -121,6 +108,44 @@ def login(user: UsuarioLogin):
         return {"status": "sucesso", "access_token": token, "usuario": user_db}
     except HTTPException as e: raise e
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+# NOVO: Cadastro de Usuário blindado apenas para Admins
+@app.post("/usuarios")
+def cadastrar_usuario(user: UsuarioCreate, admin_logado: dict = Depends(get_usuario_atual)):
+    if admin_logado['nivel_acesso'] != 'admin_geral':
+        raise HTTPException(status_code=403, detail="Apenas administradores gerais podem cadastrar novos usuários.")
+        
+    try:
+        # 1. Verifica se o login já existe
+        if len(supabase.table('usuarios').select('*').eq('usuario', user.usuario).execute().data) > 0:
+            raise HTTPException(status_code=400, detail="Usuário de login já está em uso")
+        
+        # 2. Busca o ID do departamento pelo nome, ou cria um novo se não existir
+        nome_dept = user.departamento_nome.strip()
+        dept_check = supabase.table('departamentos').select('id').eq('nome', nome_dept).execute()
+        
+        if len(dept_check.data) > 0:
+            dept_id = dept_check.data[0]['id']
+        else:
+            novo_dept = supabase.table('departamentos').insert({"nome": nome_dept}).execute()
+            dept_id = novo_dept.data[0]['id']
+
+        # 3. Cria o usuário com a senha criptografada e o departamento correto
+        novo_usuario = {
+            "nome": user.nome,
+            "usuario": user.usuario,
+            "senha": get_password_hash(user.senha),
+            "cargo": user.cargo,
+            "departamento_id": dept_id,
+            "nivel_acesso": user.nivel_acesso
+        }
+        
+        supabase.table('usuarios').insert(novo_usuario).execute()
+        return {"status": "sucesso", "mensagem": f"Usuário criado e vinculado ao departamento {nome_dept}"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- ROTAS DE ESTOQUE ---
 @app.get("/estoque")
@@ -170,7 +195,7 @@ def registrar_movimentacao(mov: MovimentacaoCreate, user: dict = Depends(get_usu
     dados_mov.update({'departamento_id': user['departamento_id'], 'usuario_id': user['sub'], 'data': datetime.now().isoformat()})
     return supabase.table('movimentacoes').insert(dados_mov).execute().data
 
-# --- ROTAS DE SOLICITAÇÕES (A MÁGICA) ---
+# --- ROTAS DE SOLICITAÇÕES ---
 @app.post("/solicitacoes")
 def criar_solicitacao(solic: SolicitacaoCreate, user: dict = Depends(get_usuario_atual)):
     dados = {
@@ -199,14 +224,11 @@ def responder(id: int, resp: SolicitacaoResposta, user: dict = Depends(get_usuar
         item = supabase.table('estoque').select('*').eq('id', solic['item_id']).execute().data[0]
         if item['quantidade'] < solic['quantidade']: raise HTTPException(status_code=400, detail="Estoque insuficiente.")
         
-        # Tira do solicitado
         supabase.table('estoque').update({'quantidade': item['quantidade'] - solic['quantidade']}).eq('id', solic['item_id']).execute()
         
-        # Cria no solicitante
         novo_item = {"nome": item['nome'], "categoria": item['categoria'], "quantidade": solic['quantidade'], "localizacao": f"Transferido de Dept {solic['dept_solicitado_id']}", "departamento_id": solic['dept_solicitante_id']}
         supabase.table('estoque').insert(novo_item).execute()
         
-        # Registra Saída
         supabase.table('movimentacoes').insert({"item_id": solic['item_id'], "quantidade": solic['quantidade'], "projeto": f"Transferência p/ Dept {solic['dept_solicitante_id']}", "tipo": "saida", "departamento_id": solic['dept_solicitado_id'], "usuario_id": user['sub'], "data": datetime.now().isoformat()}).execute()
         
     supabase.table('solicitacoes').update({"status": resp.status, "data_resposta": datetime.now().isoformat()}).eq('id', id).execute()
