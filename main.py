@@ -10,7 +10,7 @@ from jose import JWTError, jwt
 # --- CONFIGURAÇÕES DE SEGURANÇA (JWT e Hashing) ---
 SECRET_KEY = "chave-super-secreta-territorio-do-fazer-2026" 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440 # O Token dura 24 horas
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -26,6 +26,7 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+# CADEADO PRINCIPAL: Verifica quem está fazendo a requisição
 def get_usuario_atual(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Acesso não autorizado ou Token ausente")
@@ -58,6 +59,7 @@ class ItemCreate(BaseModel):
     categoria: str
     quantidade: int
     localizacao: str
+    quantidade_minima: int = 0 # Adicionado para os alertas!
 
 class UsuarioLogin(BaseModel):
     usuario: str
@@ -79,7 +81,7 @@ class MovimentacaoCreate(BaseModel):
     data: str
 
 
-# --- ROTAS DE USUÁRIOS E LOGIN (ATUALIZADAS COM SEGURANÇA) ---
+# --- ROTAS DE USUÁRIOS E LOGIN ---
 @app.post("/usuarios")
 def cadastrar_usuario(user: UsuarioCreate):
     try:
@@ -98,7 +100,7 @@ def cadastrar_usuario(user: UsuarioCreate):
 @app.post("/login")
 def login(user: UsuarioLogin):
     try:
-        response = supabase.table('usuarios').select('*').eq('usuario', user.usuario).execute()
+        response = supabase.table('usuarios').select('*, departamentos(nome)').eq('usuario', user.usuario).execute()
         
         if len(response.data) == 0:
             raise HTTPException(status_code=401, detail="Usuário ou senha incorretos")
@@ -130,60 +132,94 @@ def login(user: UsuarioLogin):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- ROTAS DE ESTOQUE (ANTIGAS, MANTIDAS PARA O APP NÃO QUEBRAR) ---
+# --- ROTAS DE ESTOQUE (ISOLADAS POR DEPARTAMENTO) ---
 @app.get("/estoque")
 def listar_estoque():
     try:
-        response = supabase.table('estoque').select('*').order('id').execute()
+        # Traz todos os itens, mas agora puxa também o nome do departamento dono!
+        response = supabase.table('estoque').select('*, departamentos(nome)').order('id').execute()
         return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/estoque")
-def cadastrar_item(item: ItemCreate):
+def cadastrar_item(item: ItemCreate, usuario_logado: dict = Depends(get_usuario_atual)):
     try:
-        response = supabase.table('estoque').insert(item.dict()).execute()
+        novo_item = item.dict()
+        # Amarra o item ao departamento de quem está logado
+        novo_item['departamento_id'] = usuario_logado['departamento_id']
+        
+        response = supabase.table('estoque').insert(novo_item).execute()
         return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/estoque/{item_id}")
-def editar_item(item_id: int, item: ItemCreate):
+def editar_item(item_id: int, item: ItemCreate, usuario_logado: dict = Depends(get_usuario_atual)):
     try:
-        response = supabase.table('estoque').update(item.dict()).eq('id', item_id).execute()
-        if not response.data:
+        check = supabase.table('estoque').select('departamento_id').eq('id', item_id).execute()
+        if not check.data:
             raise HTTPException(status_code=404, detail="Item não encontrado")
+        
+        # Regra de Ouro: Só edita se for do seu departamento ou se você for admin_geral
+        if check.data[0]['departamento_id'] != usuario_logado['departamento_id'] and usuario_logado['nivel_acesso'] != 'admin_geral':
+            raise HTTPException(status_code=403, detail="Sem permissão para editar itens de outro departamento.")
+            
+        dados_atualizados = item.dict()
+        response = supabase.table('estoque').update(dados_atualizados).eq('id', item_id).execute()
         return response.data
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/estoque/{item_id}")
-def excluir_item(item_id: int):
+def excluir_item(item_id: int, usuario_logado: dict = Depends(get_usuario_atual)):
     try:
+        check = supabase.table('estoque').select('departamento_id').eq('id', item_id).execute()
+        if not check.data:
+            raise HTTPException(status_code=404, detail="Item não encontrado")
+        
+        if check.data[0]['departamento_id'] != usuario_logado['departamento_id'] and usuario_logado['nivel_acesso'] != 'admin_geral':
+            raise HTTPException(status_code=403, detail="Sem permissão para excluir itens de outro departamento.")
+
         response = supabase.table('estoque').delete().eq('id', item_id).execute()
         return {"mensagem": "Item excluído com sucesso"}
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- ROTAS DE MOVIMENTAÇÕES (ANTIGAS, MANTIDAS PARA O APP NÃO QUEBRAR) ---
+# --- ROTAS DE MOVIMENTAÇÕES ---
 @app.get("/movimentacoes")
-def listar_movimentacoes():
+def listar_movimentacoes(usuario_logado: dict = Depends(get_usuario_atual)):
     try:
-        response = supabase.table('movimentacoes').select('*').order('id', desc=True).execute()
+        # Se for admin geral, vê tudo. Se não, vê só do seu departamento.
+        query = supabase.table('movimentacoes').select('*, usuarios(nome), departamentos(nome)').order('id', desc=True)
+        if usuario_logado['nivel_acesso'] != 'admin_geral':
+            query = query.eq('departamento_id', usuario_logado['departamento_id'])
+            
+        response = query.execute()
         return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/movimentacoes")
-def registrar_movimentacao(mov: MovimentacaoCreate):
+def registrar_movimentacao(mov: MovimentacaoCreate, usuario_logado: dict = Depends(get_usuario_atual)):
     try:
-        item_response = supabase.table('estoque').select('quantidade').eq('id', mov.item_id).execute()
+        item_response = supabase.table('estoque').select('*').eq('id', mov.item_id).execute()
         
         if not item_response.data:
-            raise HTTPException(status_code=404, detail="Item não encontrado no estoque.")
+            raise HTTPException(status_code=404, detail="Item não encontrado.")
             
-        qtd_atual = item_response.data[0]['quantidade']
+        item_db = item_response.data[0]
+        
+        # Bloqueia retirada direta de itens de outro departamento (Isso será feito via Solicitação na Fase 4)
+        if item_db['departamento_id'] != usuario_logado['departamento_id'] and usuario_logado['nivel_acesso'] != 'admin_geral':
+            raise HTTPException(status_code=403, detail="Este item pertence a outro departamento. Você deve solicitar uma transferência.")
+            
+        qtd_atual = item_db['quantidade']
         
         if mov.tipo == "saida":
             if mov.quantidade > qtd_atual:
@@ -195,11 +231,12 @@ def registrar_movimentacao(mov: MovimentacaoCreate):
         supabase.table('estoque').update({'quantidade': nova_qtd}).eq('id', mov.item_id).execute()
         
         dados_mov = mov.dict()
+        dados_mov['departamento_id'] = usuario_logado['departamento_id']
+        dados_mov['usuario_id'] = usuario_logado['sub']
         if not dados_mov.get('data'):
             dados_mov['data'] = datetime.now().isoformat()
             
         mov_response = supabase.table('movimentacoes').insert(dados_mov).execute()
-        
         return {"mensagem": "Saída registrada com sucesso!", "dados": mov_response.data}
 
     except HTTPException as e:
