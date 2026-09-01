@@ -4,21 +4,27 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 from datetime import datetime, timedelta
-from passlib.context import CryptContext
 from jose import JWTError, jwt
+import bcrypt
 
-# --- CONFIGURAÇÕES DE SEGURANÇA (JWT e Hashing) ---
+# --- CONFIGURAÇÕES DE SEGURANÇA (JWT e Hashing Direto) ---
 SECRET_KEY = "chave-super-secreta-territorio-do-fazer-2026" 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def get_password_hash(password: str):
+    # Gera o salt e criptografa a senha diretamente com bcrypt (Livre de bugs!)
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed.decode('utf-8')
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
-
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+def verify_password(plain_password: str, hashed_password: str):
+    try:
+        # Compara a senha digitada com o hash seguro do banco
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    except ValueError:
+        # Se tentar logar com um usuário antigo que não tem senha criptografada, apenas nega o acesso
+        return False
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -26,7 +32,6 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# CADEADO PRINCIPAL: Verifica quem está fazendo a requisição
 def get_usuario_atual(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Acesso não autorizado ou Token ausente")
