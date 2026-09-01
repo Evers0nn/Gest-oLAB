@@ -36,7 +36,7 @@ def get_usuario_atual(authorization: str = Header(None)):
     except JWTError:
         raise HTTPException(status_code=401, detail="Token inválido ou expirado")
 
-app = FastAPI(title="API Gestão de Laboratório v3.0 - Auditoria")
+app = FastAPI(title="API Gestão de Laboratório v2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,7 +58,6 @@ def registrar_log(usuario_nome: str, dept_id: int, acao: str):
         supabase.table('auditoria').insert({
             "usuario": usuario_nome,
             "departamento": dept_nome,
-            "departamento_id": dept_id,
             "acao": acao
         }).execute()
     except Exception:
@@ -95,10 +94,10 @@ class SolicitacaoCreate(BaseModel):
     item_id: int
     quantidade: int
     dept_solicitado_id: int
-    observacao: str = ""
 
 class SolicitacaoResposta(BaseModel):
     status: str
+
 
 # --- ROTAS BÁSICAS E DEPARTAMENTOS ---
 @app.get("/departamentos")
@@ -108,24 +107,12 @@ def listar_departamentos():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/usuarios")
-def listar_usuarios():
-    try:
-        # Traz dados não sensíveis para o Frontend mapear os nomes nas tabelas
-        return supabase.table('usuarios').select('id, nome, departamento_id').execute().data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/auditoria")
 def listar_auditoria(user: dict = Depends(get_usuario_atual)):
-    nivel = int(user['nivel_acesso'])
-    if nivel == 2:
-        raise HTTPException(status_code=403, detail="Sem acesso ao Log.")
+    if int(user['nivel_acesso']) != 0:
+        raise HTTPException(status_code=403, detail="Apenas o Admin Geral (Nível 0) pode acessar o Log de Auditoria.")
     try:
-        query = supabase.table('auditoria').select('*').order('id', desc=True).limit(300)
-        if nivel == 1: 
-            query = query.eq('departamento_id', user['departamento_id'])
-        return query.execute().data
+        return supabase.table('auditoria').select('*').order('id', desc=True).limit(200).execute().data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -141,7 +128,7 @@ def login(user: UsuarioLogin):
         try:
             nivel_int = int(user_db.get('nivel_acesso', 2))
         except (ValueError, TypeError):
-            nivel_int = 2
+            nivel_int = 0 if user_db.get('nivel_acesso') == 'admin_geral' else 1 if user_db.get('nivel_acesso') == 'admin_dept' else 2
 
         token = create_access_token({
             "sub": str(user_db['id']),
@@ -152,7 +139,7 @@ def login(user: UsuarioLogin):
         del user_db['senha']
         user_db['nivel_acesso'] = nivel_int
         
-        registrar_log(user_db['nome'], user_db['departamento_id'], "Realizou login no sistema.")
+        registrar_log(user_db['nome'], user_db['departamento_id'], "Realizou login no sistema")
         return {"status": "sucesso", "access_token": token, "usuario": user_db}
     except HTTPException as e: raise e
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
@@ -163,12 +150,13 @@ def cadastrar_usuario(user: UsuarioCreate, admin: dict = Depends(get_usuario_atu
     
     if nivel_criador == 2:
         raise HTTPException(status_code=403, detail="Monitores (Nível 2) não podem criar usuários.")
+    
     if nivel_criador == 1 and user.nivel_acesso < 1:
-        raise HTTPException(status_code=403, detail="Responsáveis não podem criar Admin Geral.")
+        raise HTTPException(status_code=403, detail="Responsáveis (Nível 1) não podem criar Administradores Gerais.")
     
     try:
         if len(supabase.table('usuarios').select('*').eq('usuario', user.usuario).execute().data) > 0:
-            raise HTTPException(status_code=400, detail="Usuário já está em uso")
+            raise HTTPException(status_code=400, detail="Nome de usuário já está em uso")
         
         nome_dept = user.departamento_nome.strip()
         dept_check = supabase.table('departamentos').select('id').eq('nome', nome_dept).execute()
@@ -177,12 +165,12 @@ def cadastrar_usuario(user: UsuarioCreate, admin: dict = Depends(get_usuario_atu
             dept_id = dept_check.data[0]['id']
         else:
             if nivel_criador != 0:
-                raise HTTPException(status_code=403, detail="Apenas o Admin Geral cadastra novos departamentos.")
+                raise HTTPException(status_code=403, detail="Apenas o Admin Geral pode cadastrar novos departamentos.")
             novo_dept = supabase.table('departamentos').insert({"nome": nome_dept}).execute()
             dept_id = novo_dept.data[0]['id']
 
         if nivel_criador == 1 and dept_id != admin['departamento_id']:
-            raise HTTPException(status_code=403, detail="Você só pode cadastrar no seu próprio departamento.")
+            raise HTTPException(status_code=403, detail="Você só pode cadastrar usuários no seu próprio departamento.")
 
         novo_usuario = {
             "nome": user.nome,
@@ -194,172 +182,175 @@ def cadastrar_usuario(user: UsuarioCreate, admin: dict = Depends(get_usuario_atu
         }
         
         supabase.table('usuarios').insert(novo_usuario).execute()
-        registrar_log(admin['nome'], admin['departamento_id'], f"Cadastrou o usuário '{user.usuario}' (Nível {user.nivel_acesso}) no Dept. {nome_dept}.")
-        return {"status": "sucesso", "mensagem": "Usuário criado com sucesso!"}
+        registrar_log(admin['nome'], admin['departamento_id'], f"Cadastrou o usuário '{user.usuario}' (Nível {user.nivel_acesso})")
+        return {"status": "sucesso", "mensagem": f"Usuário nível {user.nivel_acesso} criado com sucesso!"}
     except HTTPException as e: raise e
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
 
 # --- ROTAS DE ESTOQUE ---
 @app.get("/estoque")
 def listar_estoque():
-    try:
-        return supabase.table('estoque').select('*, departamentos(nome)').order('id').execute().data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return supabase.table('estoque').select('*, departamentos(nome)').order('id').execute().data
 
 @app.post("/estoque")
 def cadastrar_item(item: ItemCreate, user: dict = Depends(get_usuario_atual)):
-    try:
-        novo = item.dict()
-        novo['departamento_id'] = user['departamento_id']
-        res = supabase.table('estoque').insert(novo).execute().data
-        registrar_log(user['nome'], user['departamento_id'], f"Adicionou o item '{item.nome}' ({item.quantidade} un.) ao estoque.")
-        return res
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    novo = item.dict()
+    novo['departamento_id'] = user['departamento_id']
+    res = supabase.table('estoque').insert(novo).execute().data
+    registrar_log(user['nome'], user['departamento_id'], f"Adicionou o item '{item.nome}' ({item.quantidade} un.) ao estoque")
+    return res
 
 @app.put("/estoque/{item_id}")
 def editar_item(item_id: int, item: ItemCreate, user: dict = Depends(get_usuario_atual)):
-    try:
-        check = supabase.table('estoque').select('departamento_id').eq('id', item_id).execute().data
-        if not check: raise HTTPException(status_code=404, detail="Item não encontrado")
-        if check[0]['departamento_id'] != user['departamento_id'] and int(user['nivel_acesso']) != 0:
-            raise HTTPException(status_code=403, detail="Sem permissão.")
-            
-        res = supabase.table('estoque').update(item.dict()).eq('id', item_id).execute().data
-        registrar_log(user['nome'], user['departamento_id'], f"Atualizou o item ID {item_id} ('{item.nome}').")
-        return res
-    except HTTPException as e: raise e
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    check = supabase.table('estoque').select('departamento_id').eq('id', item_id).execute().data
+    if not check: raise HTTPException(status_code=404, detail="Item não encontrado")
+    
+    if check[0]['departamento_id'] != user['departamento_id'] and int(user['nivel_acesso']) != 0:
+        raise HTTPException(status_code=403, detail="Sem permissão para editar itens de outro departamento.")
+        
+    res = supabase.table('estoque').update(item.dict()).eq('id', item_id).execute().data
+    registrar_log(user['nome'], user['departamento_id'], f"Atualizou os dados do item ID {item_id} ('{item.nome}')")
+    return res
 
 @app.delete("/estoque/{item_id}")
 def excluir_item(item_id: int, user: dict = Depends(get_usuario_atual)):
-    try:
-        nivel = int(user['nivel_acesso'])
-        if nivel == 2: raise HTTPException(status_code=403, detail="Monitores não excluem itens.")
-            
-        check = supabase.table('estoque').select('departamento_id, nome').eq('id', item_id).execute().data
-        if not check: raise HTTPException(status_code=404, detail="Não encontrado")
+    nivel = int(user['nivel_acesso'])
+    if nivel == 2:
+        raise HTTPException(status_code=403, detail="Monitores (Nível 2) não podem excluir materiais.")
         
-        if check[0]['departamento_id'] != user['departamento_id'] and nivel != 0:
-            raise HTTPException(status_code=403, detail="Sem permissão.")
-            
-        supabase.table('estoque').delete().eq('id', item_id).execute()
-        registrar_log(user['nome'], user['departamento_id'], f"Excluiu permanentemente o item '{check[0]['nome']}'.")
-        return {"mensagem": "Ok"}
-    except HTTPException as e: raise e
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    check = supabase.table('estoque').select('departamento_id, nome').eq('id', item_id).execute().data
+    if not check: raise HTTPException(status_code=404, detail="Item não encontrado")
+    
+    if check[0]['departamento_id'] != user['departamento_id'] and nivel != 0:
+        raise HTTPException(status_code=403, detail="Sem permissão para excluir itens de outro departamento.")
+        
+    supabase.table('estoque').delete().eq('id', item_id).execute()
+    registrar_log(user['nome'], user['departamento_id'], f"Excluiu permanentemente o item '{check[0]['nome']}'")
+    return {"mensagem": "Item excluído com sucesso"}
+
 
 # --- ROTAS DE MOVIMENTAÇÃO ---
 @app.get("/movimentacoes")
 def listar_movimentacoes(user: dict = Depends(get_usuario_atual)):
-    try:
-        query = supabase.table('movimentacoes').select('*, usuarios(nome), departamentos(nome)').order('id', desc=True)
-        if int(user['nivel_acesso']) != 0:
-            query = query.eq('departamento_id', user['departamento_id'])
-        return query.execute().data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    query = supabase.table('movimentacoes').select('*, usuarios(nome), departamentos(nome)').order('id', desc=True)
+    if int(user['nivel_acesso']) != 0:
+        query = query.eq('departamento_id', user['departamento_id'])
+    return query.execute().data
 
 @app.post("/movimentacoes")
 def registrar_movimentacao(mov: MovimentacaoCreate, user: dict = Depends(get_usuario_atual)):
-    try:
-        item_res = supabase.table('estoque').select('*').eq('id', mov.item_id).execute().data
-        if not item_res: raise HTTPException(status_code=404, detail="Item não encontrado.")
-        item_db = item_res[0]
+    item_res = supabase.table('estoque').select('*').eq('id', mov.item_id).execute().data
+    if not item_res:
+        raise HTTPException(status_code=404, detail="Item não encontrado no estoque.")
+    item_db = item_res[0]
+    
+    if item_db['departamento_id'] != user['departamento_id'] and int(user['nivel_acesso']) != 0:
+        raise HTTPException(status_code=403, detail="Este item pertence a outro departamento. Solicite uma transferência.")
         
-        if item_db['departamento_id'] != user['departamento_id'] and int(user['nivel_acesso']) != 0:
-            raise HTTPException(status_code=403, detail="Pertence a outro departamento. Solicite transferência.")
-            
-        nova_qtd = item_db['quantidade'] - mov.quantidade if mov.tipo == "saida" else item_db['quantidade'] + mov.quantidade
-        if nova_qtd < 0: raise HTTPException(status_code=400, detail="Estoque insuficiente.")
-        
-        supabase.table('estoque').update({'quantidade': nova_qtd}).eq('id', mov.item_id).execute()
-        dados_mov = mov.dict()
-        dados_mov.update({'departamento_id': item_db['departamento_id'], 'usuario_id': user['sub'], 'data': datetime.now().isoformat()})
-        
-        res = supabase.table('movimentacoes').insert(dados_mov).execute().data
-        registrar_log(user['nome'], user['departamento_id'], f"Registrou saída de {mov.quantidade} un. de '{item_db['nome']}' para '{mov.projeto}'.")
-        return res
-    except HTTPException as e: raise e
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    nova_qtd = item_db['quantidade'] - mov.quantidade if mov.tipo == "saida" else item_db['quantidade'] + mov.quantidade
+    if nova_qtd < 0:
+        raise HTTPException(status_code=400, detail="Estoque insuficiente.")
+    
+    supabase.table('estoque').update({'quantidade': nova_qtd}).eq('id', mov.item_id).execute()
+    dados_mov = mov.dict()
+    dados_mov.update({
+        'departamento_id': item_db['departamento_id'],
+        'usuario_id': user['sub'],
+        'data': datetime.now().isoformat()
+    })
+    res = supabase.table('movimentacoes').insert(dados_mov).execute().data
+    registrar_log(user['nome'], user['departamento_id'], f"Registrou saída de {mov.quantidade} un. de '{item_db['nome']}' para o projeto '{mov.projeto}'")
+    return res
+
 
 # --- ROTAS DE SOLICITAÇÕES ---
 @app.post("/solicitacoes")
 def criar_solicitacao(solic: SolicitacaoCreate, user: dict = Depends(get_usuario_atual)):
-    try:
-        item_res = supabase.table('estoque').select('nome').eq('id', solic.item_id).execute().data
-        item_nome = item_res[0]['nome'] if item_res else f"Item {solic.item_id}"
+    item_res = supabase.table('estoque').select('nome').eq('id', solic.item_id).execute().data
+    item_nome = item_res[0]['nome'] if item_res else f"Item {solic.item_id}"
 
-        dados = {
-            "item_id": solic.item_id,
-            "dept_solicitante_id": user['departamento_id'],
-            "dept_solicitado_id": solic.dept_solicitado_id,
-            "quantidade": solic.quantidade,
-            "usuario_solicitante_id": user['sub'],
-            "status": "pendente",
-            "observacao": solic.observacao
-        }
-        supabase.table('solicitacoes').insert(dados).execute()
-        registrar_log(user['nome'], user['departamento_id'], f"Solicitou {solic.quantidade} un. de '{item_nome}' do Dept ID {solic.dept_solicitado_id}.")
-        return {"status": "ok"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    dados = {
+        "item_id": solic.item_id,
+        "dept_solicitante_id": user['departamento_id'],
+        "dept_solicitado_id": solic.dept_solicitado_id,
+        "quantidade": solic.quantidade,
+        "usuario_solicitante_id": user['sub'],
+        "status": "pendente"
+    }
+    supabase.table('solicitacoes').insert(dados).execute()
+    registrar_log(user['nome'], user['departamento_id'], f"Solicitou {solic.quantidade} un. de '{item_nome}' do Dept ID {solic.dept_solicitado_id}")
+    return {"status": "ok"}
 
 @app.get("/solicitacoes")
 def listar_solicitacoes(user: dict = Depends(get_usuario_atual)):
-    try:
-        # A MÁGICA DE SEGURANÇA: Removemos o join problemático para evitar erro de banco de dados
-        res = supabase.table('solicitacoes').select('*').order('id', desc=True).execute().data
-        if int(user['nivel_acesso']) == 0: return res
-        return [s for s in res if s['dept_solicitante_id'] == user['departamento_id'] or s['dept_solicitado_id'] == user['departamento_id']]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    res = supabase.table('solicitacoes').select('*, usuarios(nome)').order('id', desc=True).execute().data
+    if int(user['nivel_acesso']) == 0:
+        return res
+    return [s for s in res if s['dept_solicitante_id'] == user['departamento_id'] or s['dept_solicitado_id'] == user['departamento_id']]
 
 @app.put("/solicitacoes/{id}/responder")
 def responder_solicitacao(id: int, resp: SolicitacaoResposta, user: dict = Depends(get_usuario_atual)):
-    try:
-        nivel = int(user['nivel_acesso'])
-        if nivel == 2: raise HTTPException(status_code=403, detail="Monitores não aprovam solicitações.")
-            
-        solic_res = supabase.table('solicitacoes').select('*').eq('id', id).execute().data
-        if not solic_res: raise HTTPException(status_code=404, detail="Não encontrada.")
-        solic = solic_res[0]
-
-        if solic['status'] != 'pendente': raise HTTPException(status_code=400, detail="Já respondida.")
-        if solic['dept_solicitado_id'] != user['departamento_id'] and nivel != 0: raise HTTPException(status_code=403, detail="Sem permissão.")
-            
-        if resp.status == 'aprovado':
-            item_res = supabase.table('estoque').select('*').eq('id', solic['item_id']).execute().data
-            if not item_res: raise HTTPException(status_code=404, detail="Item não encontrado no departamento.")
-            item = item_res[0]
-
-            if item['quantidade'] < solic['quantidade']:
-                raise HTTPException(status_code=400, detail=f"Estoque insuficiente. Disponível: {item['quantidade']}")
-            
-            # Subtrai do doador
-            supabase.table('estoque').update({'quantidade': item['quantidade'] - solic['quantidade']}).eq('id', solic['item_id']).execute()
-            
-            # Cria ou atualiza no solicitante
-            item_dest = supabase.table('estoque').select('*').eq('nome', item['nome']).eq('departamento_id', solic['dept_solicitante_id']).execute().data
-            if item_dest:
-                supabase.table('estoque').update({'quantidade': item_dest[0]['quantidade'] + solic['quantidade']}).eq('id', item_dest[0]['id']).execute()
-            else:
-                novo_item = {"nome": item['nome'], "categoria": item['categoria'], "quantidade": solic['quantidade'], "quantidade_minima": 0, "localizacao": f"Transf. do Dept {solic['dept_solicitado_id']}", "departamento_id": solic['dept_solicitante_id']}
-                supabase.table('estoque').insert(novo_item).execute()
-            
-            # Registra no histórico como Transferência (para não sujar o dashboard de consumo)
-            supabase.table('movimentacoes').insert({
-                "item_id": solic['item_id'], "quantidade": solic['quantidade'], "projeto": f"Transferência p/ Dept {solic['dept_solicitante_id']}", 
-                "tipo": "transferencia", "departamento_id": solic['dept_solicitado_id'], "usuario_id": user['sub'], "data": datetime.now().isoformat()
-            }).execute()
-
-        # Atualiza a solicitação marcando quem respondeu
-        supabase.table('solicitacoes').update({
-            "status": resp.status, "data_resposta": datetime.now().isoformat(), "usuario_respondedor_id": user['sub']
-        }).eq('id', id).execute()
+    nivel = int(user['nivel_acesso'])
+    
+    if nivel == 2:
+        raise HTTPException(status_code=403, detail="Monitores (Nível 2) não podem aprovar/rejeitar solicitações.")
         
-        registrar_log(user['nome'], user['departamento_id'], f"{resp.status.capitalize()} a solicitação ID {id} de transferência de material.")
-        return {"status": "ok"}
-    except HTTPException as e: raise e
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    solic_res = supabase.table('solicitacoes').select('*').eq('id', id).execute().data
+    if not solic_res:
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
+    solic = solic_res[0]
+
+    if solic['status'] != 'pendente':
+        raise HTTPException(status_code=400, detail="Esta solicitação já foi respondida anteriormente.")
+        
+    if solic['dept_solicitado_id'] != user['departamento_id'] and nivel != 0:
+        raise HTTPException(status_code=403, detail="Sem permissão para responder solicitações de outro departamento.")
+        
+    if resp.status == 'aprovado':
+        item_res = supabase.table('estoque').select('*').eq('id', solic['item_id']).execute().data
+        if not item_res:
+            raise HTTPException(status_code=404, detail="Item não encontrado no estoque do departamento doador.")
+        item = item_res[0]
+
+        if item['quantidade'] < solic['quantidade']:
+            raise HTTPException(status_code=400, detail=f"Estoque insuficiente. Disponível: {item['quantidade']}")
+        
+        # Subtrai do departamento doador
+        supabase.table('estoque').update({'quantidade': item['quantidade'] - solic['quantidade']}).eq('id', solic['item_id']).execute()
+        
+        # Verifica se o item já existe no departamento solicitante
+        item_dest = supabase.table('estoque').select('*').eq('nome', item['nome']).eq('departamento_id', solic['dept_solicitante_id']).execute().data
+        
+        if item_dest:
+            nova_qtd_dest = item_dest[0]['quantidade'] + solic['quantidade']
+            supabase.table('estoque').update({'quantidade': nova_qtd_dest}).eq('id', item_dest[0]['id']).execute()
+        else:
+            novo_item = {
+                "nome": item['nome'],
+                "categoria": item['categoria'],
+                "quantidade": solic['quantidade'],
+                "quantidade_minima": 0,
+                "localizacao": f"Transferido do Dept ID {solic['dept_solicitado_id']}",
+                "departamento_id": solic['dept_solicitante_id']
+            }
+            supabase.table('estoque').insert(novo_item).execute()
+        
+        # Registra saída na movimentação do departamento doador
+        supabase.table('movimentacoes').insert({
+            "item_id": solic['item_id'],
+            "quantidade": solic['quantidade'],
+            "projeto": f"Transferência Aprovada p/ Dept ID {solic['dept_solicitante_id']}",
+            "tipo": "saida",
+            "departamento_id": solic['dept_solicitado_id'],
+            "usuario_id": user['sub'],
+            "data": datetime.now().isoformat()
+        }).execute()
+
+    supabase.table('solicitacoes').update({
+        "status": resp.status,
+        "data_resposta": datetime.now().isoformat()
+    }).eq('id', id).execute()
+    
+    registrar_log(user['nome'], user['departamento_id'], f"{resp.status.capitalize()} a solicitação ID {id} de transferência de material")
+    return {"status": "ok"}
