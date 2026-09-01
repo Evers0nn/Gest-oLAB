@@ -4,3 +4,5 @@ sqlalchemy
 psycopg2-binary
 python-dotenv
 supabase
+passlib[bcrypt]
+python-jose[cryptography]
