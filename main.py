@@ -83,6 +83,10 @@ class UsuarioCreate(BaseModel):
     departamento_nome: str
     nivel_acesso: int = 2
 
+class TrocarSenha(BaseModel):
+    senha_atual: str
+    nova_senha: str
+
 class MovimentacaoCreate(BaseModel):
     item_id: int
     quantidade: int
@@ -109,10 +113,19 @@ def listar_departamentos():
 
 @app.get("/auditoria")
 def listar_auditoria(user: dict = Depends(get_usuario_atual)):
-    if int(user['nivel_acesso']) != 0:
-        raise HTTPException(status_code=403, detail="Apenas o Admin Geral (Nível 0) pode acessar o Log de Auditoria.")
+    nivel = int(user['nivel_acesso'])
+    if nivel > 1:
+        raise HTTPException(status_code=403, detail="Acesso negado ao Log de Auditoria.")
     try:
-        return supabase.table('auditoria').select('*').order('id', desc=True).limit(200).execute().data
+        query = supabase.table('auditoria').select('*').order('id', desc=True).limit(200)
+        
+        # Filtra pelo nome do departamento se for Nível 1
+        if nivel == 1:
+            dept_res = supabase.table('departamentos').select('nome').eq('id', user['departamento_id']).execute()
+            if dept_res.data:
+                query = query.eq('departamento', dept_res.data[0]['nome'])
+                
+        return query.execute().data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -150,7 +163,6 @@ def cadastrar_usuario(user: UsuarioCreate, admin: dict = Depends(get_usuario_atu
     
     if nivel_criador == 2:
         raise HTTPException(status_code=403, detail="Monitores (Nível 2) não podem criar usuários.")
-    
     if nivel_criador == 1 and user.nivel_acesso < 1:
         raise HTTPException(status_code=403, detail="Responsáveis (Nível 1) não podem criar Administradores Gerais.")
     
@@ -184,6 +196,21 @@ def cadastrar_usuario(user: UsuarioCreate, admin: dict = Depends(get_usuario_atu
         supabase.table('usuarios').insert(novo_usuario).execute()
         registrar_log(admin['nome'], admin['departamento_id'], f"Cadastrou o usuário '{user.usuario}' (Nível {user.nivel_acesso})")
         return {"status": "sucesso", "mensagem": f"Usuário nível {user.nivel_acesso} criado com sucesso!"}
+    except HTTPException as e: raise e
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/usuarios/senha")
+def alterar_senha(dados: TrocarSenha, user: dict = Depends(get_usuario_atual)):
+    try:
+        res = supabase.table('usuarios').select('senha').eq('id', user['sub']).execute()
+        if not res.data or not verify_password(dados.senha_atual, res.data[0]['senha']):
+            raise HTTPException(status_code=400, detail="Senha atual incorreta.")
+            
+        nova_senha_hash = get_password_hash(dados.nova_senha)
+        supabase.table('usuarios').update({'senha': nova_senha_hash}).eq('id', user['sub']).execute()
+        
+        registrar_log(user['nome'], user['departamento_id'], "Alterou a própria senha de acesso.")
+        return {"status": "sucesso", "mensagem": "Senha atualizada com sucesso!"}
     except HTTPException as e: raise e
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
@@ -302,24 +329,22 @@ def responder_solicitacao(id: int, resp: SolicitacaoResposta, user: dict = Depen
     solic = solic_res[0]
 
     if solic['status'] != 'pendente':
-        raise HTTPException(status_code=400, detail="Esta solicitação já foi respondida anteriormente.")
+        raise HTTPException(status_code=400, detail="Esta solicitação já foi respondida.")
         
     if solic['dept_solicitado_id'] != user['departamento_id'] and nivel != 0:
-        raise HTTPException(status_code=403, detail="Sem permissão para responder solicitações de outro departamento.")
+        raise HTTPException(status_code=403, detail="Sem permissão.")
         
     if resp.status == 'aprovado':
         item_res = supabase.table('estoque').select('*').eq('id', solic['item_id']).execute().data
         if not item_res:
-            raise HTTPException(status_code=404, detail="Item não encontrado no estoque do departamento doador.")
+            raise HTTPException(status_code=404, detail="Item não encontrado no estoque.")
         item = item_res[0]
 
         if item['quantidade'] < solic['quantidade']:
             raise HTTPException(status_code=400, detail=f"Estoque insuficiente. Disponível: {item['quantidade']}")
         
-        # Subtrai do departamento doador
         supabase.table('estoque').update({'quantidade': item['quantidade'] - solic['quantidade']}).eq('id', solic['item_id']).execute()
         
-        # Verifica se o item já existe no departamento solicitante
         item_dest = supabase.table('estoque').select('*').eq('nome', item['nome']).eq('departamento_id', solic['dept_solicitante_id']).execute().data
         
         if item_dest:
@@ -336,7 +361,6 @@ def responder_solicitacao(id: int, resp: SolicitacaoResposta, user: dict = Depen
             }
             supabase.table('estoque').insert(novo_item).execute()
         
-        # Registra saída na movimentação do departamento doador
         supabase.table('movimentacoes').insert({
             "item_id": solic['item_id'],
             "quantidade": solic['quantidade'],
