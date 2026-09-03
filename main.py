@@ -98,6 +98,7 @@ class SolicitacaoCreate(BaseModel):
     item_id: int
     quantidade: int
     dept_solicitado_id: int
+    observacao: str = ""
 
 class SolicitacaoResposta(BaseModel):
     status: str
@@ -108,6 +109,13 @@ class SolicitacaoResposta(BaseModel):
 def listar_departamentos():
     try:
         return supabase.table('departamentos').select('*').execute().data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/usuarios")
+def listar_usuarios():
+    try:
+        return supabase.table('usuarios').select('id, nome, departamento_id').execute().data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -303,6 +311,7 @@ def criar_solicitacao(solic: SolicitacaoCreate, user: dict = Depends(get_usuario
         "dept_solicitado_id": solic.dept_solicitado_id,
         "quantidade": solic.quantidade,
         "usuario_solicitante_id": user['sub'],
+        "observacao": solic.observacao,
         "status": "pendente"
     }
     supabase.table('solicitacoes').insert(dados).execute()
@@ -311,7 +320,8 @@ def criar_solicitacao(solic: SolicitacaoCreate, user: dict = Depends(get_usuario
 
 @app.get("/solicitacoes")
 def listar_solicitacoes(user: dict = Depends(get_usuario_atual)):
-    res = supabase.table('solicitacoes').select('*, usuarios(nome)').order('id', desc=True).execute().data
+    # CORREÇÃO: Tiramos o join 'usuarios(nome)' daqui. O React fará a ligação sozinho.
+    res = supabase.table('solicitacoes').select('*').order('id', desc=True).execute().data
     if int(user['nivel_acesso']) == 0:
         return res
     return [s for s in res if s['dept_solicitante_id'] == user['departamento_id'] or s['dept_solicitado_id'] == user['departamento_id']]
@@ -373,7 +383,8 @@ def responder_solicitacao(id: int, resp: SolicitacaoResposta, user: dict = Depen
 
     supabase.table('solicitacoes').update({
         "status": resp.status,
-        "data_resposta": datetime.now().isoformat()
+        "data_resposta": datetime.now().isoformat(),
+        "usuario_respondedor_id": user['sub']
     }).eq('id', id).execute()
     
     registrar_log(user['nome'], user['departamento_id'], f"{resp.status.capitalize()} a solicitação ID {id} de transferência de material")
